@@ -2,50 +2,111 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract Project Files
+      - name: Extract project ZIP
+        shell: bash
         run: |
-          unzip -q -o sliding-puzzle-fixed.zip
+          set -euxo pipefail
+
+          if [ -f sliding-puzzle-fixed.zip ]; then
+            unzip -q -o sliding-puzzle-fixed.zip
+          fi
+
+          if [ -d artifacts/sliding-puzzle ]; then
+            cp -a artifacts/sliding-puzzle/. .
+          fi
+
+          test -f package.json
+          test -f capacitor.config.ts
+          test -d android
+          test -f android/gradlew
+
+          echo "Project files verified."
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: ''
 
-      - name: Set up Java JDK 21
+      - name: Set up Java JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '21'
 
-      - name: Install and Build Web Assets
-        working-directory: artifacts/sliding-puzzle
-        run: |
-          npm install -g pnpm
-          pnpm install --no-frozen-lockfile
-          pnpm run build:android:web
-          mkdir -p .output
-          cp -r dist/client .output/public
-          npx cap sync android
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
-      - name: Build Android APK
-        working-directory: artifacts/sliding-puzzle/android
+      - name: Install dependencies
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          set -euxo pipefail
+          pnpm install --no-frozen-lockfile
+
+      - name: Build Web Assets
+        run: |
+          set -euxo pipefail
+          pnpm run build:android:web
+
+          echo "Checking generated web assets..."
+
+          if [ -d .output/public ]; then
+            echo "Found .output/public"
+          elif [ -d dist/client ]; then
+            echo "Found dist/client"
+            mkdir -p .output/public
+            cp -a dist/client/. .output/public/
+          else
+            echo "ERROR: No web assets found."
+            echo "Available output directories:"
+            find . -maxdepth 4 -type d \
+              \( -name public -o -name client -o -name dist -o -name .output \) \
+              -print
+            exit 1
+          fi
+
+          test -f .output/public/index.html
+
+      - name: Sync Capacitor
+        run: |
+          set -euxo pipefail
+          pnpm exec cap sync android
+
+      - name: Verify Android SDK
+        run: |
+          set -euxo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          test -d "$ANDROID_HOME"
+
+      - name: Build Debug APK
+        run: |
+          set -euxo pipefail
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: sliding-puzzle-apk
-          path: artifacts/sliding-puzzle/android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
