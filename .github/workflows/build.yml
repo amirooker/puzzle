@@ -13,15 +13,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract zip and prepare files
+      - name: Extract Project Files
         run: |
-          if [ -f sliding-puzzle-fixed.zip ]; then
-            unzip -q -o sliding-puzzle-fixed.zip
-          fi
-          if [ -d artifacts/sliding-puzzle ]; then
-            cp -r artifacts/sliding-puzzle/* .
-            cp -r artifacts/sliding-puzzle/.* . 2>/dev/null || true
-          fi
+          unzip -q -o sliding-puzzle-fixed.zip
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -34,32 +28,24 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install dependencies
+      - name: Install and Build Web Assets
+        working-directory: artifacts/sliding-puzzle
         run: |
           npm install -g pnpm
           pnpm install --no-frozen-lockfile
-
-      - name: Build Web Assets
-        run: |
           pnpm run build:android:web
           mkdir -p .output
           cp -r dist/client .output/public
-
-      - name: Sync Capacitor
-        run: |
           npx cap sync android
 
-      - name: Make Gradlew Executable
+      - name: Build Android APK
+        working-directory: artifacts/sliding-puzzle/android
         run: |
-          chmod +x android/gradlew
-
-      - name: Build Debug APK
-        run: |
-          cd android
+          chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: sliding-puzzle-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: artifacts/sliding-puzzle/android/app/build/outputs/apk/debug/app-debug.apk
