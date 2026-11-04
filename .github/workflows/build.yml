@@ -10,24 +10,26 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Signed Release APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
+      - name: Extract Project ZIP
         shell: bash
         run: |
           set -euxo pipefail
 
-          if [ -f sliding-puzzle-fixed.zip ]; then
+          if [ -f sliding-puzzle-source.zip ]; then
+            unzip -q -o sliding-puzzle-source.zip
+          elif [ -f sliding-puzzle-fixed.zip ]; then
             unzip -q -o sliding-puzzle-fixed.zip
           fi
 
-          if [ -d artifacts/sliding-puzzle ]; then
-            cp -a artifacts/sliding-puzzle/. .
+          if [ -d sliding-puzzle ]; then
+            cp -a sliding-puzzle/. .
           fi
 
           test -f package.json
@@ -35,78 +37,82 @@ jobs:
           test -d android
           test -f android/gradlew
 
-          echo "Project files verified."
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: ''
+          bun-version: latest
 
-      - name: Set up Java JDK
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Install dependencies
-        run: |
-          set -euxo pipefail
-          pnpm install --no-frozen-lockfile
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
 
       - name: Build Web Assets
         run: |
           set -euxo pipefail
-          pnpm run build:android:web
-
-          echo "Checking generated web assets..."
-
-          if [ -d .output/public ]; then
-            echo "Found .output/public"
-          elif [ -d dist/client ]; then
-            echo "Found dist/client"
-            mkdir -p .output/public
-            cp -a dist/client/. .output/public/
-          else
-            echo "ERROR: No web assets found."
-            echo "Available output directories:"
-            find . -maxdepth 4 -type d \
-              \( -name public -o -name client -o -name dist -o -name .output \) \
-              -print
-            exit 1
-          fi
-
+          bun run build:android:web
           test -f .output/public/index.html
 
       - name: Sync Capacitor
         run: |
           set -euxo pipefail
-          pnpm exec cap sync android
+          chmod +x android/gradlew
+          bunx cap sync android
+
+      - name: Configure Release Signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release-key.jks"
+
+          test -s "$RUNNER_TEMP/release-key.jks"
+
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release-key.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Verify Android SDK
         run: |
           set -euxo pipefail
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           test -d "$ANDROID_HOME"
 
-      - name: Build Debug APK
+      - name: Build Release APK
         run: |
           set -euxo pipefail
-          chmod +x android/gradlew
           cd android
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Upload APK
-        if: success()
+      - name: Verify APK Signature
+        run: |
+          set -euxo pipefail
+
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+
+          test -s "$APK"
+
+          BUILD_TOOLS=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
+
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: sliding-puzzle-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: sliding-puzzle-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
